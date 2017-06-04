@@ -34,6 +34,7 @@ cmd:option('-primetext',"",'used as a prompt to "seed" the state of the LSTM usi
 cmd:option('-length',2000,'number of characters to sample')
 cmd:option('-temperature',1,'temperature of sampling')
 cmd:option('-gpuid',0,'which gpu to use. -1 = use CPU')
+cmd:option('-opencl',0,'use OpenCL (instead of CUDA)')
 cmd:option('-verbose',1,'set to 0 to ONLY print the sampled text, no diagnostics')
 cmd:option('-name',"",'added to the start of the card name section')
 cmd:option('-supertypes',"",'added the start of the supertype section.')
@@ -58,18 +59,34 @@ end
 
 -- check that cunn/cutorch are installed if user wants to use the GPU
 if opt.gpuid >= 0 then
-    local ok, cunn = pcall(require, 'cunn')
-    local ok2, cutorch = pcall(require, 'cutorch')
-    if not ok then gprint('package cunn not found!') end
-    if not ok2 then gprint('package cutorch not found!') end
-    if ok and ok2 then
-        gprint('using CUDA on GPU ' .. opt.gpuid .. '...')
-        cutorch.setDevice(opt.gpuid + 1) -- note +1 to make it 0 indexed! sigh lua
-        cutorch.manualSeed(opt.seed)
-    else
-        gprint('Falling back on CPU mode')
-        opt.gpuid = -1 -- overwrite user setting
-    end
+	if opt.opencl == 0 then
+		local ok, cunn = pcall(require, 'cunn')
+		local ok2, cutorch = pcall(require, 'cutorch')
+		if not ok then gprint('package cunn not found!') end
+		if not ok2 then gprint('package cutorch not found!') end
+		if ok and ok2 then
+			gprint('using CUDA on GPU ' .. opt.gpuid .. '...')
+			cutorch.setDevice(opt.gpuid + 1) -- note +1 to make it 0 indexed! sigh lua
+			cutorch.manualSeed(opt.seed)
+		else
+			gprint('Falling back on CPU mode')
+			opt.gpuid = -1 -- overwrite user setting
+		end
+	elseif opt.opencl == 1 then
+		local ok, cunn = pcall(require, 'clnn')
+		local ok2, cutorch = pcall(require, 'cltorch')
+		if not ok then print('package clnn not found!') end
+		if not ok2 then print('package cltorch not found!') end
+		if ok and ok2 then
+			gprint('using OpenCL on GPU ' .. opt.gpuid .. '...')
+			gprint('Make sure that your saved checkpoint was also trained with GPU. If it was trained with CPU use -gpuid -1 for sampling as well')
+			cltorch.setDevice(opt.gpuid + 1) -- note +1 to make it 0 indexed! sigh lua
+			torch.manualSeed(opt.seed)
+		else
+			gprint('Falling back on CPU mode')
+			opt.gpuid = -1 -- overwrite user setting
+		end
+	end
 end
 torch.manualSeed(opt.seed)
 
@@ -94,7 +111,13 @@ current_state = {}
 for L = 1,checkpoint.opt.num_layers do
     -- c and h for all layers
     local h_init = torch.zeros(1, checkpoint.opt.rnn_size)
-    if opt.gpuid >= 0 then h_init = h_init:cuda() end
+    if opt.gpuid >= 0 then
+		if opt.opencl == 0 then
+			h_init = h_init:cuda()
+		elseif opt.opencl == 1 then
+			h_init = h_init:cl();
+		end
+	end
     table.insert(current_state, h_init:clone())
     table.insert(current_state, h_init:clone())
 end
@@ -108,7 +131,13 @@ if string.len(seed_text) > 0 then
     for c in seed_text:gmatch'.' do
         prev_char = torch.Tensor{vocab[c]}
         io.write(ivocab[prev_char[1]])
-        if opt.gpuid >= 0 then prev_char = prev_char:cuda() end
+        if opt.gpuid >= 0 then
+			if opt.opencl == 0 then
+				prev_char = prev_char:cuda()
+			elseif opt.opencl == 1 then
+				prev_char = prev_char:cl()
+			end
+		end
         local lst = protos.rnn:forward{prev_char, unpack(current_state)}
         -- lst is a list of [state1,state2,..stateN,output]. We want everything but last piece
         current_state = {}
@@ -120,7 +149,13 @@ else
     gprint('missing seed text, using uniform probability over first character')
     gprint('--------------------------')
     prediction = torch.Tensor(1, #ivocab):fill(1)/(#ivocab)
-    if opt.gpuid >= 0 then prediction = prediction:cuda() end
+    if opt.gpuid >= 0 then
+		if opt.opencl == 0 then
+			prediction = prediction:cuda()
+		elseif opt.opencl == 1 then
+			prediction = prediction:cl()
+		end
+	end
 end
 
 -- start sampling/argmaxing
@@ -173,27 +208,27 @@ for i=1, opt.length do
 
 
     if ivocab[prev_char[1]] == '|' then
-    if barcount == 1 then
-	prependtext = opt.name
-    elseif barcount == 2 then
-	prependtext = opt.supertypes
-    elseif barcount == 3 then
-	prependtext = opt.types
-    elseif barcount == 4 then
-	prependtext = opt.loyalty
-    elseif barcount == 5 then
-	prependtext = opt.subtypes
-    elseif barcount == 6 then
-	prependtext = opt.rarity
-    elseif barcount == 7 then
-	prependtext = opt.powertoughness
-    elseif barcount == 8 then
-	prependtext = opt.manacost
-    elseif barcount == 9 then
-	prependtext = opt.bodytext_prepend
-    elseif barcount == 10 then
-	prependtext = opt.bodytext_append
-    end
+		if barcount == 1 then
+			prependtext = opt.name
+		elseif barcount == 2 then
+			prependtext = opt.supertypes
+		elseif barcount == 3 then
+			prependtext = opt.types
+		elseif barcount == 4 then
+			prependtext = opt.loyalty
+		elseif barcount == 5 then
+			prependtext = opt.subtypes
+		elseif barcount == 6 then
+			prependtext = opt.rarity
+		elseif barcount == 7 then
+			prependtext = opt.powertoughness
+		elseif barcount == 8 then
+			prependtext = opt.manacost
+		elseif barcount == 9 then
+			prependtext = opt.bodytext_prepend
+		elseif barcount == 10 then
+			prependtext = opt.bodytext_append
+		end
     end
 
 
@@ -202,7 +237,13 @@ for i=1, opt.length do
     		for c in prependtext:gmatch'.' do
         		local prev_char_test = torch.Tensor{vocab[c]}
         		io.write(ivocab[prev_char_test[1]])
-        		if opt.gpuid >= 0 then prev_char_test = prev_char_test:cuda() end
+        		if opt.gpuid >= 0 then
+					if opt.opencl == 0 then
+						prev_char_test = prev_char_test:cuda()
+					elseif opt.opencl == 1 then
+						prev_char_test = prev_char_test:cl()
+					end
+				end
         		local lst_test = protos.rnn:forward{prev_char_test, unpack(current_state)}
         		prediction = lst_test[#lst_test] -- last element holds the log probabilities
 		end
