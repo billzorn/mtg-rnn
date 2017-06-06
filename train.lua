@@ -275,7 +275,7 @@ function feval(x)
         clones.rnn[t]:training() -- make sure we are in correct mode (this is cheap, sets flag)
         local lst = clones.rnn[t]:forward{x[t], unpack(rnn_state[t-1])}
         rnn_state[t] = {}
-        for i=1,#init_state do table.insert(rnn_state[t], lst[i]) end -- extract the state, without output
+        for i=1,#init_state do rnn_state[t][#rnn_state[t]+1] = lst[i] end -- extract the state, without output
         predictions[t] = lst[#lst] -- last element is the prediction
         loss = loss + clones.criterion[t]:forward(predictions[t], y[t])
     end
@@ -286,7 +286,7 @@ function feval(x)
     for t=opt.seq_length,1,-1 do
         -- backprop through loss, and softmax/linear
         local doutput_t = clones.criterion[t]:backward(predictions[t], y[t])
-        table.insert(drnn_state[t], doutput_t)
+        drnn_state[t][#drnn_state[t]+1] = doutput_t
         local dlst = clones.rnn[t]:backward({x[t], unpack(rnn_state[t-1])}, drnn_state[t])
         drnn_state[t-1] = {}
         for k,v in pairs(dlst) do
