@@ -243,7 +243,7 @@ function eval_split(split_index, max_batches)
             clones.rnn[t]:evaluate() -- for dropout proper functioning
             local lst = clones.rnn[t]:forward{x[t], unpack(rnn_state[t-1])}
             rnn_state[t] = {}
-            for i=1,#init_state do table.insert(rnn_state[t], lst[i]) end
+            for i=1,#init_state do rnn_state[t][#rnn_state[t]+1] = lst[i] end
             prediction = lst[#lst] 
             loss = loss + clones.criterion[t]:forward(prediction, y[t])
         end
