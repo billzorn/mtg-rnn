@@ -287,14 +287,9 @@ function feval(x)
         local doutput_t = clones.criterion[t]:backward(predictions[t], y[t])
         drnn_state[t][#drnn_state[t]+1] = doutput_t
         local dlst = clones.rnn[t]:backward({x[t], unpack(rnn_state[t-1])}, drnn_state[t])
-        drnn_state[t-1] = {}
-        for k,v in pairs(dlst) do
-            if k > 1 then -- k == 1 is gradient on x, which we dont need
-                -- note we do k-1 because first item is dembeddings, and then follow the 
-                -- derivatives of the state, starting at index 2. I know...
-                drnn_state[t-1][k-1] = v
-            end
-        end
+        -- dlst[1] is the gradient on x, which we don't need
+        -- using unpack should slide the values into the correct indexes, allowing us to forego a loop.
+        drnn_state[t-1] = {unpack(dlst, 2)}
     end
     ------------------------ misc ----------------------
     -- transfer final state to initial state (BPTT)
