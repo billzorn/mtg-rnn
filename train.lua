@@ -294,8 +294,8 @@ function feval(x)
     end
     ------------------------ misc ----------------------
     -- transfer final state to initial state (BPTT)
-    init_state_global = rnn_state[#rnn_state] -- NOTE: I don't think this needs to be a clone, right?
-    -- grad_params:div(opt.seq_length) -- this line should be here but since we use rmsprop it would have no effect. Removing for efficiency
+    -- NOTE: line below actually needs a clone. Otherwise, at t=1 during the backpropagation, rnn_state[0] will be equal to the init_state_global of the next batch, different than the one used in the forward
+    init_state_global = clone_list(rnn_state[#rnn_state])
     -- clip gradient element-wise
     grad_params:clamp(-opt.grad_clip, opt.grad_clip)
     return loss, grad_params
