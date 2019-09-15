@@ -369,8 +369,9 @@ for i = 1, iterations do
         print('loss is NaN.  This usually indicates a bug.  Please check the issues page for existing issues, or create a new issue, if none exist.  Ideally, please state: your operating system, 32-bit/64-bit, your blas version, cpu/cuda/cl?')
         break -- halt
     end
-    if loss0 == nil then loss0 = loss[1] end
-    if loss[1] > loss0 * 3 then
+    if loss0 == nil then
+        loss0 = loss[1]
+    elseif loss[1] > loss0 * 3 then
         print('loss is exploding, aborting.')
         break -- halt
     end
