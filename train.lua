@@ -162,23 +162,29 @@ end
 
 -- the initial state of the cell/hidden states
 init_state = {}
-for L=1,opt.num_layers do
+-- Hackarific scoping to suggest the locals be cleaned up
+do
+    -- Do a little preprocessing for the init_state, since we are going to clone the h_init anyway.
     local h_init = torch.zeros(opt.batch_size, opt.rnn_size)
-    if opt.gpuid >=0 and opt.opencl == 0 then h_init = h_init:cuda() end
-    if opt.gpuid >=0 and opt.opencl == 1 then h_init = h_init:cl() end
-    table.insert(init_state, h_init:clone())
+    -- Ship the zero tensor to the GPU and, while we are here, ship the model as well.
+    if opt.gpuid >=0 then
+        if opt.opencl == 0 then
+            h_init = h_init:cuda()
+            for _,v in pairs(protos) do v:cuda() end
+        elseif opt.opencl == 1 then
+            h_init = h_init:cl()
+            for _,v in pairs(protos) do v:cl() end
+        end
+    end
+    local num_states = opt.num_layers;
     if opt.model == 'lstm' or opt.model == 'lstmb' then
+        num_states = num_states * 2;
+    end
+    -- Do the nice, clean loop.
+    for L=1,num_states do
         table.insert(init_state, h_init:clone())
     end
-end
-
--- ship the model to the GPU if desired
-if opt.gpuid >= 0 and opt.opencl == 0 then
-    for k,v in pairs(protos) do v:cuda() end
-end
-if opt.gpuid >= 0 and opt.opencl == 1 then
-    for k,v in pairs(protos) do v:cl() end
-end
+end;
 
 -- put the above things into one flattened parameters tensor
 params, grad_params = model_utils.combine_all_parameters(protos.rnn)
@@ -361,7 +367,7 @@ for i = 1, iterations do
     if i % opt.print_every == 0 then
         print(string.format("%d/%d (epoch %.3f), train_loss = %6.8f, grad/param norm = %6.4e, time/batch = %.4fs", i, iterations, epoch * opt.max_epochs, train_loss, grad_params:norm() / params:norm(), time))
     end
-   
+
     if i % 10 == 0 then collectgarbage() end
 
     -- handle early stopping if things are going really bad
