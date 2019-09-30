@@ -162,23 +162,29 @@ end
 
 -- the initial state of the cell/hidden states
 init_state = {}
-for L=1,opt.num_layers do
+-- Hackarific scoping to suggest the locals be cleaned up
+do
+    -- Do a little preprocessing for the init_state, since we are going to clone the h_init anyway.
     local h_init = torch.zeros(opt.batch_size, opt.rnn_size)
-    if opt.gpuid >=0 and opt.opencl == 0 then h_init = h_init:cuda() end
-    if opt.gpuid >=0 and opt.opencl == 1 then h_init = h_init:cl() end
-    table.insert(init_state, h_init:clone())
+    -- Ship the zero tensor to the GPU and, while we are here, ship the model as well.
+    if opt.gpuid >=0 then
+        if opt.opencl == 0 then
+            h_init = h_init:cuda()
+            for _,v in pairs(protos) do v:cuda() end
+        elseif opt.opencl == 1 then
+            h_init = h_init:cl()
+            for _,v in pairs(protos) do v:cl() end
+        end
+    end
+    local num_states = opt.num_layers;
     if opt.model == 'lstm' or opt.model == 'lstmb' then
+        num_states = num_states * 2;
+    end
+    -- Do the nice, clean loop.
+    for L=1,num_states do
         table.insert(init_state, h_init:clone())
     end
-end
-
--- ship the model to the GPU if desired
-if opt.gpuid >= 0 and opt.opencl == 0 then
-    for k,v in pairs(protos) do v:cuda() end
-end
-if opt.gpuid >= 0 and opt.opencl == 1 then
-    for k,v in pairs(protos) do v:cl() end
-end
+end;
 
 -- put the above things into one flattened parameters tensor
 params, grad_params = model_utils.combine_all_parameters(protos.rnn)
@@ -209,7 +215,7 @@ for name,proto in pairs(protos) do
 end
 
 -- preprocessing helper function
-function prepro(x,y)
+local function prepro(x,y)
     x = x:transpose(1,2):contiguous() -- swap the axes for faster indexing
     y = y:transpose(1,2):contiguous()
     if opt.gpuid >= 0 and opt.opencl == 0 then -- ship the input arrays to GPU
@@ -243,7 +249,7 @@ function eval_split(split_index, max_batches)
             clones.rnn[t]:evaluate() -- for dropout proper functioning
             local lst = clones.rnn[t]:forward{x[t], unpack(rnn_state[t-1])}
             rnn_state[t] = {}
-            for i=1,#init_state do table.insert(rnn_state[t], lst[i]) end
+            for i=1,#init_state do rnn_state[t][#rnn_state[t]+1] = lst[i] end
             prediction = lst[#lst] 
             loss = loss + clones.criterion[t]:forward(prediction, y[t])
         end
@@ -271,13 +277,13 @@ function feval(x)
     local rnn_state = {[0] = init_state_global}
     local predictions = {}           -- softmax outputs
     local loss = 0
+    local local_clones = clones
     for t=1,opt.seq_length do
-        clones.rnn[t]:training() -- make sure we are in correct mode (this is cheap, sets flag)
-        local lst = clones.rnn[t]:forward{x[t], unpack(rnn_state[t-1])}
-        rnn_state[t] = {}
-        for i=1,#init_state do table.insert(rnn_state[t], lst[i]) end -- extract the state, without output
+        local_clones.rnn[t]:training() -- make sure we are in correct mode (this is cheap, sets flag)
+        local lst = local_clones.rnn[t]:forward{x[t], unpack(rnn_state[t-1])}
+        rnn_state[t] = {unpack(lst, i, #init_state)} -- extract the state, without output
         predictions[t] = lst[#lst] -- last element is the prediction
-        loss = loss + clones.criterion[t]:forward(predictions[t], y[t])
+        loss = loss + local_clones.criterion[t]:forward(predictions[t], y[t])
     end
     loss = loss / opt.seq_length
     ------------------ backward pass -------------------
@@ -285,22 +291,17 @@ function feval(x)
     local drnn_state = {[opt.seq_length] = clone_list(init_state, true)} -- true also zeros the clones
     for t=opt.seq_length,1,-1 do
         -- backprop through loss, and softmax/linear
-        local doutput_t = clones.criterion[t]:backward(predictions[t], y[t])
-        table.insert(drnn_state[t], doutput_t)
-        local dlst = clones.rnn[t]:backward({x[t], unpack(rnn_state[t-1])}, drnn_state[t])
-        drnn_state[t-1] = {}
-        for k,v in pairs(dlst) do
-            if k > 1 then -- k == 1 is gradient on x, which we dont need
-                -- note we do k-1 because first item is dembeddings, and then follow the 
-                -- derivatives of the state, starting at index 2. I know...
-                drnn_state[t-1][k-1] = v
-            end
-        end
+        local doutput_t = local_clones.criterion[t]:backward(predictions[t], y[t])
+        drnn_state[t][#drnn_state[t]+1] = doutput_t
+        local dlst = local_clones.rnn[t]:backward({x[t], unpack(rnn_state[t-1])}, drnn_state[t])
+        -- dlst[1] is the gradient on x, which we don't need
+        -- using unpack should slide the values into the correct indexes, allowing us to forego a loop.
+        drnn_state[t-1] = {unpack(dlst, 2)}
     end
     ------------------------ misc ----------------------
     -- transfer final state to initial state (BPTT)
-    init_state_global = rnn_state[#rnn_state] -- NOTE: I don't think this needs to be a clone, right?
-    -- grad_params:div(opt.seq_length) -- this line should be here but since we use rmsprop it would have no effect. Removing for efficiency
+    -- NOTE: line below actually needs a clone. Otherwise, at t=1 during the backpropagation, rnn_state[0] will be equal to the init_state_global of the next batch, different than the one used in the forward
+    init_state_global = clone_list(rnn_state[#rnn_state])
     -- clip gradient element-wise
     grad_params:clamp(-opt.grad_clip, opt.grad_clip)
     return loss, grad_params
@@ -366,7 +367,7 @@ for i = 1, iterations do
     if i % opt.print_every == 0 then
         print(string.format("%d/%d (epoch %.3f), train_loss = %6.8f, grad/param norm = %6.4e, time/batch = %.4fs", i, iterations, epoch * opt.max_epochs, train_loss, grad_params:norm() / params:norm(), time))
     end
-   
+
     if i % 10 == 0 then collectgarbage() end
 
     -- handle early stopping if things are going really bad
@@ -374,8 +375,9 @@ for i = 1, iterations do
         print('loss is NaN.  This usually indicates a bug.  Please check the issues page for existing issues, or create a new issue, if none exist.  Ideally, please state: your operating system, 32-bit/64-bit, your blas version, cpu/cuda/cl?')
         break -- halt
     end
-    if loss0 == nil then loss0 = loss[1] end
-    if loss[1] > loss0 * 3 then
+    if loss0 == nil then
+        loss0 = loss[1]
+    elseif loss[1] > loss0 * 3 then
         print('loss is exploding, aborting.')
         break -- halt
     end
